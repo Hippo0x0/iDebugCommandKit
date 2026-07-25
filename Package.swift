@@ -2,21 +2,21 @@
 import PackageDescription
 
 let package = Package(
-    name: "DebugCommandKit",
+    name: "iDebugCommandKit",
     platforms: [
         .iOS(.v16)
     ],
     products: [
         .library(
-            name: "DebugCommandKit",
-            targets: ["DebugCommandKit"]
+            name: "iDebugCommandKit",
+            targets: ["iDebugCommandKit"]
         )
     ],
     targets: [
         .target(
-            name: "DebugCommandKit",
+            name: "iDebugCommandKit",
             swiftSettings: [
-                .define("DEBUG_COMMAND_KIT", .when(configuration: .debug))
+                .define("I_DEBUG_COMMAND_KIT", .when(configuration: .debug))
             ]
         )
     ]

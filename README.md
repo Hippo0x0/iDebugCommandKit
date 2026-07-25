@@ -1,6 +1,6 @@
-# DebugCommandKit
+# iDebugCommandKit
 
-`DebugCommandKit` is a loopback-only command server for inspecting and driving
+`iDebugCommandKit` is a loopback-only command server for inspecting and driving
 UIKit apps while they run in **DEBUG**. It is intended for local development,
 UI diagnosis, and automation helpers; it is not a production remote-control
 surface.
@@ -20,8 +20,8 @@ workflows.
 ## Debug-only guarantee
 
 Every Swift declaration and implementation in this package is wrapped in
-`#if DEBUG_COMMAND_KIT && canImport(UIKit)`. The package explicitly defines
-`DEBUG_COMMAND_KIT` for SwiftPM Debug builds and its podspec defines it only
+`#if I_DEBUG_COMMAND_KIT && canImport(UIKit)`. The package explicitly defines
+`I_DEBUG_COMMAND_KIT` for SwiftPM Debug builds and its podspec defines it only
 for CocoaPods Debug builds; its Release product contains no server
 implementation or public API.
 
@@ -37,14 +37,14 @@ Use an app-specific token rather than relying on the default.
 Add the package in Xcode, or declare a local dependency while developing:
 
 ```swift
-.package(path: "../DebugCommandKit")
+.package(path: "../iDebugCommandKit")
 ```
 
-Then add `DebugCommandKit` to the app target and start it only in DEBUG:
+Then add `iDebugCommandKit` to the app target and start it only in DEBUG:
 
 ```swift
 #if DEBUG
-import DebugCommandKit
+import iDebugCommandKit
 
 private let debugServer = DebugCommandServer(token: "my-app-debug")
 #endif
@@ -64,7 +64,7 @@ Use a Debug-only dependency in the host app's `Podfile`:
 
 ```ruby
 target 'MyApp' do
-  pod 'DebugCommandKit', :path => '../DebugCommandKit', :configurations => ['Debug']
+  pod 'iDebugCommandKit', :path => '../iDebugCommandKit', :configurations => ['Debug']
 end
 ```
 

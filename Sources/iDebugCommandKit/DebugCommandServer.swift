@@ -1,4 +1,4 @@
-#if DEBUG_COMMAND_KIT && canImport(UIKit)
+#if I_DEBUG_COMMAND_KIT && canImport(UIKit)
 import Darwin
 import Foundation
 import UIKit
@@ -24,8 +24,8 @@ public final class DebugCommandServer: @unchecked Sendable {
 
     private let token: String
     private let excludedWindow: (UIWindow) -> Bool
-    private let queue = DispatchQueue(label: "com.debugcommandkit.accept")
-    private let clientQueue = DispatchQueue(label: "com.debugcommandkit.client", attributes: .concurrent)
+    private let queue = DispatchQueue(label: "com.idebugcommandkit.accept")
+    private let clientQueue = DispatchQueue(label: "com.idebugcommandkit.client", attributes: .concurrent)
     private let commandHandlersLock = NSLock()
     private let maxRequestBytes = 16 * 1024 * 1024
     private let socketTimeoutSeconds: Int = 3
@@ -99,7 +99,7 @@ public final class DebugCommandServer: @unchecked Sendable {
 
         let socketFD = Darwin.socket(AF_INET, SOCK_STREAM, 0)
         guard socketFD >= 0 else {
-            print("[DebugCommandKit] socket failed errno=\(errno)")
+            print("[iDebugCommandKit] socket failed errno=\(errno)")
             return
         }
 
@@ -120,13 +120,13 @@ public final class DebugCommandServer: @unchecked Sendable {
         }
 
         guard bindResult == 0 else {
-            print("[DebugCommandKit] bind 127.0.0.1:\(port) failed errno=\(errno)")
+            print("[iDebugCommandKit] bind 127.0.0.1:\(port) failed errno=\(errno)")
             Darwin.close(socketFD)
             return
         }
 
         guard Darwin.listen(socketFD, SOMAXCONN) == 0 else {
-            print("[DebugCommandKit] listen failed errno=\(errno)")
+            print("[iDebugCommandKit] listen failed errno=\(errno)")
             Darwin.close(socketFD)
             return
         }
@@ -145,7 +145,7 @@ public final class DebugCommandServer: @unchecked Sendable {
         acceptSource = source
         source.resume()
 
-        print("[DebugCommandKit] listening on 127.0.0.1:\(port)")
+        print("[iDebugCommandKit] listening on 127.0.0.1:\(port)")
     }
 
     private func acceptAvailableConnections() {
@@ -170,7 +170,7 @@ public final class DebugCommandServer: @unchecked Sendable {
             if errno == EINTR {
                 continue
             }
-            print("[DebugCommandKit] accept failed errno=\(errno)")
+            print("[iDebugCommandKit] accept failed errno=\(errno)")
             break
         }
     }
@@ -179,7 +179,7 @@ public final class DebugCommandServer: @unchecked Sendable {
         defer { Darwin.close(clientFD) }
 
         guard let requestData = readRequest(from: clientFD) else {
-            print("[DebugCommandKit] client closed before sending request")
+            print("[iDebugCommandKit] client closed before sending request")
             return
         }
 
@@ -1029,7 +1029,7 @@ public final class DebugCommandServer: @unchecked Sendable {
                     continue
                 }
                 if count < 0 {
-                    print("[DebugCommandKit] send failed errno=\(errno)")
+                    print("[iDebugCommandKit] send failed errno=\(errno)")
                 }
                 break
             }
