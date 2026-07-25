@@ -1,0 +1,8 @@
+.DS_Store
+.build/
+DerivedData/
+*.xcworkspace
+Pods/
+Podfile.lock
+__pycache__/
+*.py[cod]

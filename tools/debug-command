@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""Client for DebugCommandKit's newline-delimited JSON protocol."""
+
+import argparse
+import base64
+import contextlib
+import json
+import os
+import socket
+import subprocess
+import tempfile
+import time
+import uuid
+
+
+DEFAULT_PORT = 47666
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Send DEBUG-only commands to an app running DebugCommandKit."
+    )
+    parser.add_argument("--token", required=True, help="Token configured by the host app.")
+    parser.add_argument(
+        "--device",
+        help="Physical device name, CoreDevice identifier, hardware UDID, or serial number.",
+    )
+    parser.add_argument("--udid", help="Physical hardware UDID for iproxy.")
+    parser.add_argument("--host", default="127.0.0.1", help="Host for simulator/direct mode.")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Remote debug command port.")
+    parser.add_argument("--timeout", type=float, default=8.0)
+    parser.add_argument(
+        "--expected-bundle-id",
+        help="Optional bundle identifier assertion while connecting through a physical device.",
+    )
+
+    subcommands = parser.add_subparsers(dest="command", required=True)
+    subcommands.add_parser("ping", help="Check whether the debug command server is reachable.")
+
+    tree = subcommands.add_parser("tree", help="Dump the visible UIKit view tree as JSON.")
+    tree.add_argument("--out", help="Output JSON path. Prints to stdout when omitted.")
+    tree.add_argument("--max-depth", type=int, default=8)
+    tree.add_argument("--include-hidden", action="store_true")
+
+    capture = subcommands.add_parser("capture", help="Capture the foreground app screen as PNG.")
+    capture.add_argument("--out", required=True, help="Output PNG path.")
+    capture.add_argument(
+        "--include-excluded-windows",
+        action="store_true",
+        help="Include windows excluded by the host configuration.",
+    )
+    capture.add_argument(
+        "--before-updates",
+        action="store_true",
+        help="Capture without waiting for pending screen updates.",
+    )
+
+    tap = subcommands.add_parser("tap", help="Tap a view by point or by simple query.")
+    add_query_arguments(tap)
+    add_coordinate_arguments(tap)
+
+    scroll = subcommands.add_parser("scroll", help="Scroll a visible UIScrollView.")
+    scroll.add_argument("direction", choices=["up", "down", "left", "right"])
+    scroll.add_argument("--amount", type=float, default=360, help="Scroll distance in points.")
+    scroll.add_argument("--animated", action="store_true")
+    add_query_arguments(scroll)
+    add_coordinate_arguments(scroll)
+
+    type_text = subcommands.add_parser("type", help="Set text in the focused or matched text input.")
+    type_text.add_argument("text", help="Text to set.")
+    add_query_arguments(type_text, include_text=False)
+
+    send = subcommands.add_parser("send", help="Send an app-defined command.")
+    send.add_argument("name", help="App-defined command name.")
+    send.add_argument(
+        "--params",
+        default="{}",
+        help="JSON object passed as params (defaults to {}).",
+    )
+
+    return parser.parse_args()
+
+
+def add_query_arguments(parser, include_text=True):
+    if include_text:
+        parser.add_argument("--text", help="Match visible text.")
+    parser.add_argument("--identifier", help="Match accessibilityIdentifier.")
+    parser.add_argument("--label", help="Match accessibilityLabel.")
+    parser.add_argument("--type", help="Match UIKit view type, for example UIButton.")
+    parser.add_argument(
+        "--contains",
+        action="store_true",
+        help="Use contains string matching instead of exact matching.",
+    )
+
+
+def add_coordinate_arguments(parser):
+    parser.add_argument("--x", type=float, help="Scene x coordinate in points, or pixels with --pixels.")
+    parser.add_argument("--y", type=float, help="Scene y coordinate in points, or pixels with --pixels.")
+    parser.add_argument("--pixels", action="store_true", help="Treat --x/--y as screenshot pixel coordinates.")
+
+
+def resolve_udid(device_name_or_id):
+    if not device_name_or_id:
+        return None
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as temporary_file:
+        json_path = temporary_file.name
+
+    try:
+        subprocess.run(
+            ["xcrun", "devicectl", "list", "devices", "--json-output", json_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        with open(json_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(json_path)
+
+    for device in payload.get("result", {}).get("devices", []):
+        properties = device.get("deviceProperties", {})
+        hardware = device.get("hardwareProperties", {})
+        candidates = {
+            properties.get("name"),
+            device.get("identifier"),
+            hardware.get("udid"),
+            hardware.get("serialNumber"),
+        }
+        if device_name_or_id in candidates:
+            udid = hardware.get("udid")
+            if not udid:
+                raise SystemExit(f"Device {device_name_or_id!r} does not expose a hardware UDID.")
+            return udid
+
+    raise SystemExit(f"Could not find device {device_name_or_id!r} in devicectl list devices.")
+
+
+def find_free_local_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@contextlib.contextmanager
+def maybe_iproxy(args):
+    udid = args.udid or resolve_udid(args.device)
+    if not udid:
+        yield args.host, args.port
+        return
+
+    local_port = find_free_local_port()
+    process = subprocess.Popen(
+        ["iproxy", "-u", udid, f"{local_port}:{args.port}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        wait_for_debug_server(
+            "127.0.0.1",
+            local_port,
+            args.token,
+            args.timeout,
+            args.expected_bundle_id,
+        )
+        yield "127.0.0.1", local_port
+    finally:
+        process.terminate()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=2)
+        if process.poll() is None:
+            process.kill()
+
+
+def wait_for_debug_server(host, port, token, timeout, expected_bundle_id):
+    deadline = time.time() + timeout
+    last_error = None
+    while time.time() < deadline:
+        try:
+            payload = send_command_once(host, port, token, "ping", {}, min(1.0, timeout))
+            if expected_bundle_id and payload.get("bundleIdentifier") != expected_bundle_id:
+                last_error = f"unexpected ping payload: {payload}"
+            else:
+                return
+        except (OSError, TimeoutError, json.JSONDecodeError, SystemExit) as error:
+            last_error = error
+        time.sleep(0.15)
+    raise SystemExit(f"Timed out waiting for debug server through {host}:{port}: {last_error}")
+
+
+def send_command(host, port, token, command, params, timeout):
+    deadline = time.time() + timeout
+    last_error = None
+    while time.time() < deadline:
+        try:
+            return send_command_once(host, port, token, command, params, min(2.0, timeout))
+        except (ConnectionResetError, BrokenPipeError, socket.timeout, TimeoutError, OSError) as error:
+            last_error = error
+            time.sleep(0.15)
+    raise SystemExit(f"Debug command {command!r} failed after retries: {last_error}")
+
+
+def send_command_once(host, port, token, command, params, timeout):
+    request = {
+        "id": str(uuid.uuid4()),
+        "token": token,
+        "command": command,
+        "params": params,
+    }
+    data = (json.dumps(request, separators=(",", ":")) + "\n").encode("utf-8")
+
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        sock.sendall(data)
+        response = read_line(sock)
+
+    try:
+        parsed = json.loads(response.decode("utf-8"))
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"Invalid JSON response: {error}") from error
+
+    if parsed.get("status") != "ok":
+        error = parsed.get("error") or {}
+        raise SystemExit(f"{error.get('code', 'error')}: {error.get('message', parsed)}")
+
+    return parsed.get("payload") or {}
+
+
+def read_line(sock):
+    chunks = []
+    total = 0
+    while True:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if b"\n" in chunk:
+            break
+        if total > 80 * 1024 * 1024:
+            raise SystemExit("Response exceeded 80 MB.")
+    if not chunks:
+        raise SystemExit("No response received.")
+    return b"".join(chunks).split(b"\n", 1)[0]
+
+
+def query_params(args):
+    params = {"contains": getattr(args, "contains", False)}
+    for name in ["text", "identifier", "label", "type"]:
+        value = getattr(args, name, None)
+        if value:
+            params[name] = value
+    return params
+
+
+def coordinate_params(args, params):
+    if args.x is None and args.y is None:
+        return
+    if args.x is None or args.y is None:
+        raise SystemExit("Both --x and --y are required for coordinate targeting.")
+    params["x"] = args.x
+    params["y"] = args.y
+    params["coordinateSpace"] = "pixels" if args.pixels else "points"
+
+
+def write_text_output(path, output):
+    if not path:
+        print(output)
+        return
+    output_path = os.path.abspath(path)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write(output)
+        handle.write("\n")
+    print(output_path)
+
+
+def main():
+    args = parse_args()
+
+    with maybe_iproxy(args) as (host, port):
+        if args.command == "ping":
+            payload = send_command(host, port, args.token, "ping", {}, args.timeout)
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return
+
+        if args.command == "tree":
+            payload = send_command(
+                host,
+                port,
+                args.token,
+                "viewTree",
+                {"maxDepth": args.max_depth, "includeHidden": args.include_hidden},
+                args.timeout,
+            )
+            write_text_output(args.out, json.dumps(payload, indent=2, ensure_ascii=False))
+            return
+
+        if args.command == "capture":
+            payload = send_command(
+                host,
+                port,
+                args.token,
+                "captureScreen",
+                {
+                    "includeExcludedWindows": args.include_excluded_windows,
+                    "afterScreenUpdates": not args.before_updates,
+                },
+                args.timeout,
+            )
+            output_path = os.path.abspath(args.out)
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, "wb") as handle:
+                handle.write(base64.b64decode(payload["pngBase64"]))
+            print(output_path)
+            return
+
+        if args.command == "tap":
+            params = query_params(args)
+            coordinate_params(args, params)
+            payload = send_command(host, port, args.token, "tap", params, args.timeout)
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return
+
+        if args.command == "scroll":
+            params = query_params(args)
+            params["direction"] = args.direction
+            params["amount"] = args.amount
+            params["animated"] = args.animated
+            coordinate_params(args, params)
+            payload = send_command(host, port, args.token, "scroll", params, args.timeout)
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return
+
+        if args.command == "type":
+            params = query_params(args)
+            params["text"] = args.text
+            payload = send_command(host, port, args.token, "setText", params, args.timeout)
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return
+
+        if args.command == "send":
+            try:
+                params = json.loads(args.params)
+            except json.JSONDecodeError as error:
+                raise SystemExit(f"--params must be a JSON object: {error}") from error
+            if not isinstance(params, dict):
+                raise SystemExit("--params must be a JSON object.")
+            payload = send_command(host, port, args.token, args.name, params, args.timeout)
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return
+
+    raise SystemExit(f"Unsupported command: {args.command}")
+
+
+if __name__ == "__main__":
+    main()
