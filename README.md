@@ -5,6 +5,15 @@ UIKit apps while they run in **DEBUG**. It is intended for local development,
 UI diagnosis, and automation helpers; it is not a production remote-control
 surface.
 
+## Compatibility
+
+- Swift 5.7 or later (Xcode 14 or later)
+- iOS 13 or later
+
+The package keeps its custom-command handler `@MainActor`-isolated, so app
+code that reads or drives UIKit remains on the main actor across all supported
+toolchains.
+
 The built-in commands are:
 
 - `ping`

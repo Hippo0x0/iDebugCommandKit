@@ -1,10 +1,10 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 5.7
 import PackageDescription
 
 let package = Package(
     name: "iDebugCommandKit",
     platforms: [
-        .iOS(.v16)
+        .iOS(.v13)
     ],
     products: [
         .library(

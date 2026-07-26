@@ -324,12 +324,12 @@ public final class DebugCommandServer: @unchecked Sendable {
         let parameters = DebugParametersBox(params)
 
         if Thread.isMainThread {
-            MainActor.assumeIsolated {
+            runOnMainActor {
                 box.result = invokeCustomCommand(handler, params: parameters.value)
             }
         } else {
             DispatchQueue.main.sync {
-                MainActor.assumeIsolated {
+                self.runOnMainActor {
                     box.result = invokeCustomCommand(handler, params: parameters.value)
                 }
             }
@@ -560,7 +560,7 @@ public final class DebugCommandServer: @unchecked Sendable {
         afterScreenUpdates: Bool
     ) -> Result<ScreenCapture, DebugCommandError> {
         if Thread.isMainThread {
-            return MainActor.assumeIsolated {
+            return runOnMainActor {
                 captureScreenOnMain(
                     includeExcludedWindows: includeExcludedWindows,
                     afterScreenUpdates: afterScreenUpdates
@@ -569,7 +569,7 @@ public final class DebugCommandServer: @unchecked Sendable {
         }
 
         return DispatchQueue.main.sync {
-            MainActor.assumeIsolated {
+            self.runOnMainActor {
                 self.captureScreenOnMain(
                     includeExcludedWindows: includeExcludedWindows,
                     afterScreenUpdates: afterScreenUpdates
@@ -580,13 +580,13 @@ public final class DebugCommandServer: @unchecked Sendable {
 
     private func applicationStateDescription() -> String {
         if Thread.isMainThread {
-            return MainActor.assumeIsolated {
+            return runOnMainActor {
                 UIApplication.shared.applicationState.debugCommandDescription
             }
         }
 
         return DispatchQueue.main.sync {
-            MainActor.assumeIsolated {
+            self.runOnMainActor {
                 UIApplication.shared.applicationState.debugCommandDescription
             }
         }
@@ -597,18 +597,26 @@ public final class DebugCommandServer: @unchecked Sendable {
     ) -> Result<T, DebugCommandError> {
         let box = DebugResultBox<T>()
         if Thread.isMainThread {
-            MainActor.assumeIsolated {
-                box.result = block()
-            }
+            box.result = runOnMainActor(block)
             return box.result ?? .failure(DebugCommandError(message: "Main-thread operation did not produce a result."))
         }
 
         DispatchQueue.main.sync {
-            MainActor.assumeIsolated {
-                box.result = block()
-            }
+            box.result = self.runOnMainActor(block)
         }
         return box.result ?? .failure(DebugCommandError(message: "Main-thread operation did not produce a result."))
+    }
+
+    /// Executes a main-actor closure after the caller has synchronously entered
+    /// the main queue. This avoids depending on `MainActor.assumeIsolated`,
+    /// which is unavailable on some of this package's supported toolchains and
+    /// OS runtimes.
+    private func runOnMainActor<T>(_ operation: @MainActor () -> T) -> T {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return withoutActuallyEscaping(operation) { operation in
+            let nonisolatedOperation = unsafeBitCast(operation, to: (() -> T).self)
+            return nonisolatedOperation()
+        }
     }
 
     @MainActor
@@ -1242,24 +1250,27 @@ private extension CGRect {
 }
 
 @MainActor
-private weak var capturedDebugFirstResponder: UIResponder?
+private enum DebugFirstResponderCapture {
+    static weak var responder: UIResponder?
+}
 
 private extension UIResponder {
     @MainActor
     static func currentDebugFirstResponder() -> UIResponder? {
-        capturedDebugFirstResponder = nil
+        DebugFirstResponderCapture.responder = nil
         UIApplication.shared.sendAction(
             #selector(UIResponder.debugCaptureFirstResponder(_:)),
             to: nil,
             from: nil,
             for: nil
         )
-        return capturedDebugFirstResponder
+        return DebugFirstResponderCapture.responder
     }
 
+    @MainActor
     @objc
     func debugCaptureFirstResponder(_ sender: Any?) {
-        capturedDebugFirstResponder = self
+        DebugFirstResponderCapture.responder = self
     }
 }
 #endif
